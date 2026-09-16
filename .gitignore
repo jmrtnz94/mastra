@@ -1,4 +1,6 @@
 node_modules
+factory-artifacts/
+.factory-release-state.json
 .test-tmp/
 dist/
 test-outputs/

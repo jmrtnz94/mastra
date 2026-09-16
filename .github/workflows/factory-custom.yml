@@ -1,0 +1,55 @@
+name: Factory custom build
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [factory/integrations]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: factory-custom-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.repository == 'jmrtnz94/mastra'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      HUSKY: '0'
+      NODE_OPTIONS: --max_old_space_size=6144
+      TURBO_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@e8d4307400f9427dba7cb98e488d6ab85f1cec5f
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-pnpm-node
+      - name: Test release tooling
+        run: node --test scripts/factory-release.test.mjs
+      - name: Stamp candidate versions
+        run: node scripts/factory-release.mjs prepare
+      - name: Build matching backend and CLI with UI
+        run: pnpm turbo build --filter ./mastracode/factory --filter ./packages/cli
+      - name: Check backend and UI
+        run: |
+          pnpm --filter ./mastracode/factory check
+          pnpm --filter ./mastracode/factory-ui typecheck
+          pnpm --filter ./mastracode/factory test
+          pnpm --filter ./mastracode/factory-ui test:unit
+          pnpm --filter ./mastracode/factory-ui test:msw
+      - name: Package candidate artifacts
+        run: node scripts/factory-release.mjs pack
+      - name: Restore source manifests
+        if: always()
+        run: |
+          if test -f .factory-release-state.json; then
+            node scripts/factory-release.mjs restore
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: factory-candidate-${{ github.sha }}
+          path: factory-artifacts/
+          if-no-files-found: error
+          retention-days: 30
