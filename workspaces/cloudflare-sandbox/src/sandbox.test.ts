@@ -374,6 +374,63 @@ describe('CloudflareSandbox', () => {
       await expect(sandbox.executeCommand('echo', ['hi'])).rejects.toThrow(/store offline/);
     });
 
+    it('hydrates /workspace from the store on a cold-boot start', async () => {
+      const bridge = createFakeBridge({ apiToken: 'secret' });
+      const persistence = {
+        load: async () => new Uint8Array([1, 2, 3]),
+        save: async () => {},
+      };
+      const sandbox = createSandbox(bridge, { persistence });
+
+      await sandbox._start();
+
+      expect(bridge.hydrations).toHaveLength(1);
+      expect(Array.from(bridge.hydrations[0]!)).toEqual([1, 2, 3]);
+    });
+
+    it('does not hydrate on start when reconnecting to a running container', async () => {
+      const bridge = createFakeBridge({ apiToken: 'secret' });
+      const first = createSandbox(bridge, { persistence: { load: async () => undefined, save: async () => {} } });
+      await first._start();
+      const sandboxId = first.getInfo().metadata?.sandboxId as string;
+
+      let loads = 0;
+      const reconnected = createSandbox(bridge, {
+        sandboxId,
+        persistence: {
+          load: async () => {
+            loads++;
+            return new Uint8Array([9]);
+          },
+          save: async () => {},
+        },
+      });
+
+      await reconnected._start();
+
+      expect(loads).toBe(0);
+      expect(bridge.hydrations).toHaveLength(0);
+    });
+
+    it('persists a final snapshot on stop', async () => {
+      const bridge = createFakeBridge({ apiToken: 'secret' });
+      const store = { archive: undefined as Uint8Array | undefined, saves: 0 };
+      const persistence = {
+        load: async () => store.archive,
+        save: async (bytes: Uint8Array) => {
+          store.archive = bytes;
+          store.saves++;
+        },
+      };
+      const sandbox = createSandbox(bridge, { persistence });
+      await sandbox._start();
+
+      await sandbox._stop();
+
+      expect(store.saves).toBe(1);
+      expect(Buffer.from(store.archive!).toString('utf8')).toBe('fake-tar-archive');
+    });
+
     it('does not fail the command when persisting fails', async () => {
       const bridge = createFakeBridge({ apiToken: 'secret' });
       const persistence = {
