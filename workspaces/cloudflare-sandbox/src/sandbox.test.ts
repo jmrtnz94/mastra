@@ -233,6 +233,30 @@ describe('CloudflareSandbox', () => {
     expect(Array.from(bridge.hydrations.at(-1)!)).toEqual([9, 8, 7]);
   });
 
+  it('mounts and unmounts a bucket through the bridge', async () => {
+    const bridge = createFakeBridge({ apiToken: 'secret' });
+    const sandbox = createSandbox(bridge);
+    await sandbox._start();
+
+    await sandbox.mountBucket({ bucket: 'my-bucket', mountPath: '/mnt/data', options: { readOnly: true } });
+    expect(bridge.mounts.at(-1)).toEqual({
+      bucket: 'my-bucket',
+      mountPath: '/mnt/data',
+      options: { readOnly: true },
+    });
+
+    await sandbox.unmountBucket('/mnt/data');
+    expect(bridge.unmounts.at(-1)).toEqual({ mountPath: '/mnt/data' });
+  });
+
+  it('requires start before mountBucket and unmountBucket', async () => {
+    const bridge = createFakeBridge({ apiToken: 'secret' });
+    const sandbox = createSandbox(bridge, { id: 'not-started-mount' });
+
+    await expect(sandbox.mountBucket({ bucket: 'b', mountPath: '/mnt/data' })).rejects.toThrow(/has not been started/);
+    await expect(sandbox.unmountBucket('/mnt/data')).rejects.toThrow(/has not been started/);
+  });
+
   it('requires start before readFile, persistWorkspace and hydrateWorkspace', async () => {
     const bridge = createFakeBridge({ apiToken: 'secret' });
     const sandbox = createSandbox(bridge, { id: 'not-started-2' });
@@ -240,6 +264,130 @@ describe('CloudflareSandbox', () => {
     await expect(sandbox.readFile('a.txt')).rejects.toThrow(/has not been started/);
     await expect(sandbox.persistWorkspace()).rejects.toThrow(/has not been started/);
     await expect(sandbox.hydrateWorkspace(new Uint8Array([1]))).rejects.toThrow(/has not been started/);
+  });
+
+  describe('instructions', () => {
+    it('warns that /workspace is ephemeral when no persistence is configured', () => {
+      const bridge = createFakeBridge({ apiToken: 'secret' });
+      const sandbox = createSandbox(bridge);
+
+      const instructions = sandbox.getInstructions();
+      expect(instructions).not.toContain('persistent');
+      expect(instructions).toMatch(/do NOT survive/);
+    });
+
+    it('describes restore-on-wake when persistence is configured', () => {
+      const bridge = createFakeBridge({ apiToken: 'secret' });
+      const sandbox = createSandbox(bridge, {
+        persistence: { load: async () => undefined, save: async () => {} },
+      });
+
+      expect(sandbox.getInstructions()).toMatch(/restored when the container wakes/);
+    });
+
+    it('lets a custom instructions override win', () => {
+      const bridge = createFakeBridge({ apiToken: 'secret' });
+      const sandbox = createSandbox(bridge, { instructions: 'custom text' });
+
+      expect(sandbox.getInstructions()).toBe('custom text');
+    });
+  });
+
+  describe('automatic persistence', () => {
+    it('persists /workspace after a successful command', async () => {
+      const bridge = createFakeBridge({ apiToken: 'secret' });
+      const store = { archive: undefined as Uint8Array | undefined, saves: 0 };
+      const persistence = {
+        excludes: ['node_modules'],
+        load: async () => store.archive,
+        save: async (bytes: Uint8Array) => {
+          store.archive = bytes;
+          store.saves++;
+        },
+      };
+      const sandbox = createSandbox(bridge, { persistence });
+      await sandbox._start();
+
+      await sandbox.executeCommand('echo', ['hi']);
+
+      expect(store.saves).toBe(1);
+      expect(Buffer.from(store.archive!).toString('utf8')).toBe('fake-tar-archive');
+      expect(bridge.persists.at(-1)).toBe('node_modules');
+    });
+
+    it('restores /workspace when a slept container wakes for the next command', async () => {
+      const bridge = createFakeBridge({ apiToken: 'secret' });
+      const store = { archive: undefined as Uint8Array | undefined };
+      const persistence = {
+        load: async () => store.archive,
+        save: async (bytes: Uint8Array) => {
+          store.archive = bytes;
+        },
+      };
+      const sandbox = createSandbox(bridge, { persistence });
+      await sandbox._start();
+
+      // First command runs against the live container and saves a snapshot.
+      await sandbox.executeCommand('echo', ['hi']);
+      expect(store.archive).toBeDefined();
+
+      // Simulate the idle container sleeping between turns.
+      const sandboxId = sandbox.getInfo().metadata?.sandboxId as string;
+      bridge.sandboxes.delete(sandboxId);
+      bridge.hydrations.length = 0;
+
+      await sandbox.executeCommand('echo', ['again']);
+
+      expect(bridge.hydrations).toHaveLength(1);
+      expect(Buffer.from(bridge.hydrations[0]!).toString('utf8')).toBe('fake-tar-archive');
+    });
+
+    it('does not touch the store or check running state without persistence', async () => {
+      const bridge = createFakeBridge({ apiToken: 'secret' });
+      const sandbox = createSandbox(bridge);
+      await sandbox._start();
+
+      await sandbox.executeCommand('echo', ['hi']);
+
+      expect(bridge.requests.some(request => request.url.endsWith('/running'))).toBe(false);
+      expect(bridge.persists).toHaveLength(0);
+      expect(bridge.hydrations).toHaveLength(0);
+    });
+
+    it('fails the command when restoring on wake fails', async () => {
+      const bridge = createFakeBridge({ apiToken: 'secret' });
+      let loadCalls = 0;
+      const persistence = {
+        load: async () => {
+          loadCalls++;
+          if (loadCalls === 1) return undefined; // start(): nothing saved yet
+          throw new Error('store offline');
+        },
+        save: async () => {},
+      };
+      const sandbox = createSandbox(bridge, { persistence });
+      await sandbox._start();
+
+      const sandboxId = sandbox.getInfo().metadata?.sandboxId as string;
+      bridge.sandboxes.delete(sandboxId);
+
+      await expect(sandbox.executeCommand('echo', ['hi'])).rejects.toThrow(/store offline/);
+    });
+
+    it('does not fail the command when persisting fails', async () => {
+      const bridge = createFakeBridge({ apiToken: 'secret' });
+      const persistence = {
+        load: async () => undefined,
+        save: async () => {
+          throw new Error('store full');
+        },
+      };
+      const sandbox = createSandbox(bridge, { persistence });
+      await sandbox._start();
+
+      const result = await sandbox.executeCommand('echo', ['hi']);
+      expect(result.success).toBe(true);
+    });
   });
 });
 

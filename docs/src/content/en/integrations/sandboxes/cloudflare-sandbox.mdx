@@ -101,7 +101,40 @@ const archive = await myStorage.get('workspace-backup')
 await workspace.sandbox?.hydrateWorkspace?.(archive)
 ```
 
-For bucket mounts and execution sessions, use the corresponding `CloudflareSandboxBridgeClient` methods (`mountBucket`, `unmountBucket`, `createSession`, `deleteSession`) directly.
+For execution sessions, use the corresponding `CloudflareSandboxBridgeClient` methods (`createSession`, `deleteSession`) directly.
+
+## Automatic persistence
+
+Cloudflare stops idle containers, so files under `/workspace` do not survive between turns by default. Pass a `persistence` store to make the workspace durable: the sandbox restores it whenever a fresh container boots and archives it after each successful command and on `stop()`. The provider does not choose where the archive lives, so you supply `load` and `save`.
+
+```typescript
+const workspace = new CloudflareSandbox({
+  baseUrl: process.env.CF_SANDBOX_URL!,
+  persistence: {
+    excludes: ['node_modules'],
+    load: async () => (await myStorage.get('workspace-backup')) ?? undefined,
+    save: async archive => {
+      await myStorage.put('workspace-backup', archive)
+    },
+  },
+})
+```
+
+Persist failures after a command are logged but do not fail the command; a failed restore on wake does fail the command, since it would otherwise run against the wrong files. When no `persistence` store is configured, `/workspace` is ephemeral scratch space and `getInstructions()` warns agents accordingly.
+
+## Mount a bucket
+
+Mount an S3-compatible bucket (such as R2) as a directory in the sandbox with `mountBucket()`, and remove it with `unmountBucket()`.
+
+```typescript
+await workspace.sandbox?.mountBucket?.({
+  bucket: 'my-r2-bucket',
+  mountPath: '/mnt/data',
+  options: { readOnly: true },
+})
+
+await workspace.sandbox?.unmountBucket?.('/mnt/data')
+```
 
 ## Constructor parameters
 
@@ -163,15 +196,22 @@ For bucket mounts and execution sessions, use the corresponding `CloudflareSandb
     description: 'Custom instructions returned by getInstructions().',
     isOptional: true,
   },
+  {
+    name: 'persistence',
+    type: 'CloudflareWorkspacePersistence',
+    description:
+      'Durable store for /workspace. When set, the sandbox restores files on a fresh container boot and persists them after commands, so they survive an idle container sleep. Provides load(), save(archive), and optional excludes.',
+    isOptional: true,
+  },
 ]}
 />
 
 ## Lifecycle behavior
 
-- `start()`: Reconnects to `sandboxId` or creates a remote sandbox.
-- `stop()`: Detaches the Mastra lifecycle without deleting the remote sandbox because the bridge doesn't expose a suspend operation.
+- `start()`: Reconnects to `sandboxId` or creates a remote sandbox, then restores `/workspace` from the `persistence` store when one is configured.
+- `stop()`: Detaches the Mastra lifecycle without deleting the remote sandbox because the bridge doesn't expose a suspend operation. Persists a final `/workspace` snapshot when `persistence` is configured.
 - `destroy()`: Deletes the remote sandbox.
 
 ## Limitations
 
-The provider surfaces command execution, streamed output, file reads and writes, and workspace persistence directly on the sandbox. Bucket mounts and sessions are available on the bridge client (`CloudflareSandboxBridgeClient`) but not on the `CloudflareSandbox` surface. PTY terminals are not exposed, and the provider doesn't support background process management, stdin, snapshots, or port URLs.
+The provider surfaces command execution, streamed output, file reads and writes, workspace persistence, and bucket mounts (`mountBucket`, `unmountBucket`) directly on the sandbox. Execution sessions are available on the bridge client (`CloudflareSandboxBridgeClient`) but not on the `CloudflareSandbox` surface. PTY terminals are not exposed, and the provider doesn't support background process management, stdin, snapshots, or port URLs.

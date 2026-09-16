@@ -11,4 +11,8 @@ export {
   type CloudflareSandboxBridgeClientOptions,
   type CloudflareSession,
 } from './bridge-client';
-export { CloudflareSandbox, type CloudflareSandboxOptions } from './sandbox';
+export {
+  CloudflareSandbox,
+  type CloudflareSandboxOptions,
+  type CloudflareWorkspacePersistence,
+} from './sandbox';
