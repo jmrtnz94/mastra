@@ -345,6 +345,7 @@ vi.mock('../onboarding/settings.js', () => ({
   resolveOmModel: vi.fn(() => ''),
   resolveOmRoleModel: vi.fn(() => ''),
   saveSettings: vi.fn(),
+  THREAD_ACCOUNT_ROUTING_EXHAUSTED_KEY: 'mastracodeAccountRoutingExhausted',
   THREAD_ACTIVE_MODEL_PACK_ID_KEY: 'activeModelPackId',
   toCustomProviderModelId: vi.fn(),
 }));
@@ -1474,6 +1475,9 @@ describe('createMastraCode', () => {
     controllerThreadMetadataMock = {
       modeModelId_build: 'anthropic/claude-fable-5-1',
       activeModelPackId: 'anthropic',
+      mastracodeAccountRoutingExhausted: {
+        anthropic: { 'anthropic/claude-fable-5-1': ['anthropic:account-a'] },
+      },
       subagentModelId_explore: 'openai/gpt-5.6-mini',
       yolo: true,
     };
@@ -1501,6 +1505,9 @@ describe('createMastraCode', () => {
     expect(controllerContext.session.modelId).toBe('anthropic/claude-fable-5-1');
     expect(controllerContext.getState()).toMatchObject({
       activeModelPackId: 'anthropic',
+      mastracodeAccountRoutingExhausted: {
+        anthropic: { 'anthropic/claude-fable-5-1': ['anthropic:account-a'] },
+      },
       yolo: false,
       sandboxAllowedPaths: [],
     });
