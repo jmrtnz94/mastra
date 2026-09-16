@@ -1,5 +1,44 @@
 # @mastra/playground-ui
 
+## 56.0.0-alpha.2
+
+### Minor Changes
+
+- Added shared composer color tones, pointer spotlight, and input sizing. The composer surface and spacing are shared across consumers, with green as the default appearance. ([#24124](https://github.com/mastra-ai/mastra/pull/24124))
+
+  Set tone and activity independently, and reuse the tone for application controls. Supported tones are `green`, `purple`, `orange`, and `default`; applications map their own mode IDs to these tones:
+
+  ```tsx
+  <ComposerRing tone="purple" busy={isRunning}>
+    <ComposerBox>
+      <ComposerInput variant="textarea" />
+      <ComposerActions>
+        <ComposerToneLabel tone="purple">Plan</ComposerToneLabel>
+      </ComposerActions>
+    </ComposerBox>
+  </ComposerRing>
+  ```
+
+### Patch Changes
+
+- Add `useExpiringLocalStorageState` hook that persists a value under a localStorage key with an expiration date. The value is returned until it expires; afterwards the hook returns `undefined` with `expired: true` and removes the entry. ([#24115](https://github.com/mastra-ai/mastra/pull/24115))
+
+- Added an opt-in semantic neutral color contract in `new-theme.css` and lightweight scoped color usage reporting. ([#24032](https://github.com/mastra-ai/mastra/pull/24032))
+
+  ```css
+  @import '@mastra/playground-ui/new-theme.css';
+  ```
+
+  ```tsx
+  <div className="border-border bg-background text-foreground">Content</div>
+  ```
+
+- Updated dependencies [[`291a694`](https://github.com/mastra-ai/mastra/commit/291a694b3f9b7d9a17af7d10ed3c9c357bed7a6c), [`291a694`](https://github.com/mastra-ai/mastra/commit/291a694b3f9b7d9a17af7d10ed3c9c357bed7a6c), [`467e0a6`](https://github.com/mastra-ai/mastra/commit/467e0a630db09a1750ce9271bddb38e46681bf04), [`c016c9b`](https://github.com/mastra-ai/mastra/commit/c016c9bd051612714e662588e5928b72bd6a6ac6), [`644ac13`](https://github.com/mastra-ai/mastra/commit/644ac131110a9f24a8d92b62dd3777384211a2e7), [`aa38e6f`](https://github.com/mastra-ai/mastra/commit/aa38e6f424a0eae0e43a5c2ae0b387e404f5e6a6), [`5085475`](https://github.com/mastra-ai/mastra/commit/5085475c0da226e618eb3ee2676d347788c3fb00), [`5085475`](https://github.com/mastra-ai/mastra/commit/5085475c0da226e618eb3ee2676d347788c3fb00), [`76c7d98`](https://github.com/mastra-ai/mastra/commit/76c7d989f691510d7bfc016723cc78d7e08ac108), [`61f953a`](https://github.com/mastra-ai/mastra/commit/61f953a79736ac0d8a9650f0561c6dab1b097c8e)]:
+  - @mastra/core@1.68.0-alpha.2
+  - @mastra/memory@1.31.0-alpha.1
+  - @mastra/client-js@1.47.0-alpha.2
+  - @mastra/react@1.5.1-alpha.2
+
 ## 56.0.0-alpha.1
 
 ### Patch Changes

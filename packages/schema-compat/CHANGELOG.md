@@ -1,5 +1,11 @@
 # @mastra/schema-compat
 
+## 1.3.11-alpha.1
+
+### Patch Changes
+
+- Fixed JSON Schema adapter declarations to use bundled Ajv types, so consumers do not need a separate Ajv installation. Ajv remains bundled as a development dependency. ([#23998](https://github.com/mastra-ai/mastra/pull/23998))
+
 ## 1.3.11-alpha.0
 
 ### Patch Changes
