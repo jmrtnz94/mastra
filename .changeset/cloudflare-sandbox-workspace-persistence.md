@@ -16,5 +16,6 @@ const workspace = new CloudflareSandbox({
   },
 });
 
-await workspace.sandbox?.mountBucket?.({ bucket: 'my-r2-bucket', mountPath: '/mnt/data', options: { readOnly: true } });
+await workspace.start();
+await workspace.mountBucket({ bucket: 'my-r2-bucket', mountPath: '/mnt/data', options: { readOnly: true } });
 ```
