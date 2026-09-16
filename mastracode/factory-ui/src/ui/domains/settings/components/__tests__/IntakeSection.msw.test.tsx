@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { server } from '../../../../../../e2e/ui/msw-server';
 import { renderWithProviders, TEST_BASE_URL } from '../../../../../../e2e/ui/render';
+import type { GitLabProject, GitLabStatus } from '../../../factory/services/gitlab';
 import type { IntakeConfig, IntakeSourceBinding } from '../../../factory/services/intake';
 import type { JiraProject, JiraStatus } from '../../../factory/services/jira';
 import type { LinearProject, LinearStatus } from '../../../factory/services/linear';
@@ -15,6 +16,8 @@ const CONFIG_URL = `${TEST_BASE_URL}/web/intake/config`;
 const BINDINGS_URL = `${TEST_BASE_URL}/web/intake/bindings`;
 const LINEAR_STATUS_URL = `${TEST_BASE_URL}/web/linear/status`;
 const LINEAR_PROJECTS_URL = `${TEST_BASE_URL}/web/linear/projects`;
+const GITLAB_STATUS_URL = `${TEST_BASE_URL}/web/gitlab/status`;
+const GITLAB_PROJECTS_URL = `${TEST_BASE_URL}/web/gitlab/projects`;
 const JIRA_STATUS_URL = `${TEST_BASE_URL}/web/jira/status`;
 const JIRA_PROJECTS_URL = `${TEST_BASE_URL}/web/jira/projects`;
 
@@ -24,6 +27,7 @@ const FACTORY_B = '22222222-2222-4222-8222-222222222222';
 function baseConfig(): IntakeConfig {
   return {
     github: { enabled: true, sourceIds: null },
+    gitlab: { enabled: false, sourceIds: null },
     linear: { enabled: true, sourceIds: null },
     jira: { enabled: false, sourceIds: null },
   };
@@ -104,6 +108,45 @@ const jiraProjects: JiraProject[] = [
   { id: '10001', key: 'ENG', name: 'Engineering', connectionId: 'a1b_acme', site: 'acme.atlassian.net' },
   { id: '10002', key: 'OPS', name: 'Operations', connectionId: 'a1b_beta', site: 'beta.atlassian.net' },
 ];
+
+const gitlabReadyStatus: GitLabStatus = {
+  enabled: true,
+  configured: true,
+  connections: [{ id: 'a1b_acme', integrationId: 'gitlab', status: 'active', accountLabel: 'acme' }],
+  accounts: ['acme'],
+  reauthRequired: false,
+  reason: 'ready',
+};
+
+const gitlabProjects: GitLabProject[] = [
+  {
+    id: 'gitlab-project:encoded',
+    name: 'acme/app',
+    connectionId: 'a1b_acme',
+    accountLabel: 'acme',
+    defaultBranch: 'main',
+  },
+];
+
+function useGitLabHandlers(config: IntakeConfig) {
+  const saved = useIntakeHandlers({ config });
+  const savedBindings: Array<{ integrationId: string; sourceId: string; factoryProjectId: string | null }> = [];
+  server.use(
+    http.get(GITLAB_STATUS_URL, () => HttpResponse.json(gitlabReadyStatus)),
+    http.get(GITLAB_PROJECTS_URL, () => HttpResponse.json({ projects: gitlabProjects })),
+    http.get(BINDINGS_URL, () => HttpResponse.json({ bindings: [] })),
+    http.put(BINDINGS_URL, async ({ request }) => {
+      const body = (await request.json()) as {
+        integrationId: string;
+        sourceId: string;
+        factoryProjectId: string | null;
+      };
+      savedBindings.push(body);
+      return HttpResponse.json({ bindings: body.factoryProjectId === null ? [] : [body] });
+    }),
+  );
+  return { saved, savedBindings };
+}
 
 /**
  * Layer connected Jira sites on top of the base intake handlers. The ambient
@@ -197,6 +240,7 @@ describe('IntakeSection', () => {
       useIntakeHandlers({
         config: {
           github: { enabled: true, sourceIds: ['mastra'] },
+          gitlab: { enabled: false, sourceIds: null },
           linear: { enabled: true, sourceIds: ['lproj-1'] },
           jira: { enabled: false, sourceIds: null },
         },
@@ -398,6 +442,37 @@ describe('IntakeSection', () => {
     });
   });
 
+  describe('given GitLab is configured', () => {
+    it('selects a project and routes it to a Factory through generic bindings', async () => {
+      seedFactories();
+      const { saved, savedBindings } = useGitLabHandlers({
+        ...baseConfig(),
+        gitlab: { enabled: true, sourceIds: null },
+      });
+
+      renderIntakeSection();
+
+      expect(await screen.findByText('Connected to acme')).toBeInTheDocument();
+      const projects = await screen.findByRole('group', { name: 'GitLab projects' });
+      await userEvent.click(within(projects).getByRole('checkbox', { name: 'acme/app' }));
+
+      await waitFor(() => expect(saved).toHaveLength(1));
+      expect(saved[0]!.gitlab.sourceIds).toEqual(['gitlab-project:encoded']);
+      expect(await screen.findByText(/Not routed — this project's issues won't be picked up\./)).toBeInTheDocument();
+
+      await userEvent.click(await screen.findByLabelText('Factory for acme/app'));
+      await userEvent.click(await screen.findByRole('option', { name: 'Acme Web' }));
+
+      await waitFor(() => expect(savedBindings).toHaveLength(1));
+      expect(savedBindings[0]).toEqual({
+        integrationId: 'gitlab',
+        sourceId: 'gitlab-project:encoded',
+        factoryProjectId: FACTORY_A,
+      });
+      expect(await screen.findByText('GitLab routing updated')).toBeInTheDocument();
+    });
+  });
+
   describe('given the organization has no connected Jira account', () => {
     it('points to Mastra Platform with a disabled toggle', async () => {
       useIntakeHandlers();
@@ -531,6 +606,7 @@ describe('IntakeSection', () => {
 
       // GitHub defaults to enabled; Linear stays off until it's connected here.
       expect(await screen.findByRole('switch', { name: 'Sync GitHub issues' })).toBeChecked();
+      expect(screen.getByRole('switch', { name: 'Sync GitLab issues' })).not.toBeChecked();
       expect(screen.getByRole('switch', { name: 'Sync Linear issues' })).not.toBeChecked();
     });
   });

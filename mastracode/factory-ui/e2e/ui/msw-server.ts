@@ -31,6 +31,9 @@ export const server = setupServer(
   http.get('*/web/jira/status', () => HttpResponse.json({ error: 'not_found' }, { status: 404 })),
   http.get('*/web/jira/projects', () => HttpResponse.json({ error: 'not_found' }, { status: 404 })),
   http.get('*/web/jira/issues', () => HttpResponse.json({ error: 'not_found' }, { status: 404 })),
+  // GitLab intake is optional; feature tests override these ambient 404s.
+  http.get('*/web/gitlab/status', () => HttpResponse.json({ error: 'not_found' }, { status: 404 })),
+  http.get('*/web/gitlab/projects', () => HttpResponse.json({ error: 'not_found' }, { status: 404 })),
   http.get('*/web/factory/projects/:id/source-control-connections', () => HttpResponse.json({ connections: [] })),
   http.get('*/web/factory/projects/:id/audit', () => HttpResponse.json({ events: [], actors: {} })),
   http.get('*/web/factory/projects/:id/attention', () =>
