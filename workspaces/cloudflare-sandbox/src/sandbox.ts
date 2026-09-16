@@ -29,10 +29,9 @@ type BridgeClient = Pick<
   | 'readFile'
   | 'persistWorkspace'
   | 'hydrateWorkspace'
-  | 'mountBucket'
-  | 'unmountBucket'
   | 'exec'
->;
+> &
+  Partial<Pick<CloudflareSandboxBridgeClient, 'mountBucket' | 'unmountBucket'>>;
 
 /**
  * Caller-supplied durable store for `/workspace` archives.
@@ -149,11 +148,13 @@ export class CloudflareSandbox extends MastraSandbox {
   async start(): Promise<void> {
     if (this.sandboxId) {
       // The bridge boots the container on demand, so a stopped container is not fatal.
+      // Only hydrate a fresh/woken container: a still-running container may hold newer
+      // /workspace files than the archive, and hydrating would overwrite them.
       const running = await this.client.isRunning(this.sandboxId);
       if (!running) {
         this.logger?.debug(`Cloudflare sandbox ${this.sandboxId} is not running yet; it starts on first use`);
+        await this.hydrateFromStore();
       }
-      await this.hydrateFromStore();
       return;
     }
     this.sandboxId = await this.client.createSandbox();
@@ -319,6 +320,9 @@ export class CloudflareSandbox extends MastraSandbox {
   /** Mounts an S3-compatible bucket (e.g. R2) as a directory in the sandbox. */
   async mountBucket(request: CloudflareMountBucketRequest): Promise<void> {
     const sandboxId = this.requireSandboxId();
+    if (!this.client.mountBucket) {
+      throw new Error('The configured Cloudflare bridge client does not support mountBucket');
+    }
     await this.client.mountBucket(sandboxId, request);
     this.lastUsedAt = new Date();
   }
@@ -326,6 +330,9 @@ export class CloudflareSandbox extends MastraSandbox {
   /** Unmounts a bucket previously mounted with {@link mountBucket}. */
   async unmountBucket(mountPath: string): Promise<void> {
     const sandboxId = this.requireSandboxId();
+    if (!this.client.unmountBucket) {
+      throw new Error('The configured Cloudflare bridge client does not support unmountBucket');
+    }
     await this.client.unmountBucket(sandboxId, mountPath);
     this.lastUsedAt = new Date();
   }
