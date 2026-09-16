@@ -179,4 +179,56 @@ describe('workflow transform', () => {
       'Temporal workflow importWfWorkflow depends on timeout from node:fs. Move that code into an activity or provide its result as workflow input.',
     );
   });
+
+  it('removes standalone forbidden dynamic imports', async () => {
+    const output = await transform(`
+      import { createWorkflow } from '@mastra/core/workflows';
+
+      import('node:fs');
+      export const workflow = createWorkflow({ id: 'import-wf' }).commit();
+    `);
+
+    expect(output).not.toContain("import('node:fs')");
+  });
+
+  it('rejects workflows that depend on forbidden dynamic imports', async () => {
+    await expect(
+      transform(`
+        import { init } from '@mastra/temporal';
+
+        const nodeFs = import('node:fs');
+        const { createWorkflow } = init({
+          client: undefined,
+          taskQueue: 'mastra',
+          startToCloseTimeout: nodeFs,
+        });
+        export const workflow = createWorkflow({ id: 'import-wf' }).commit();
+      `),
+    ).rejects.toThrow(
+      'Temporal workflow importWfWorkflow depends on nodeFs from node:fs. Move that code into an activity or provide its result as workflow input.',
+    );
+  });
+
+  it('preserves object keys and shadowed bindings that match unavailable imports', async () => {
+    const output = await transform(`
+      import { readFileSync } from 'node:fs';
+      import { init } from '@mastra/temporal';
+
+      const config = { readFileSync: 'deterministic' };
+      function parse(readFileSync) {
+        return readFileSync;
+      }
+      const parsed = parse(config.readFileSync);
+      const { createWorkflow } = init({
+        client: undefined,
+        taskQueue: 'mastra',
+        startToCloseTimeout: parsed,
+      });
+      export const workflow = createWorkflow({ id: 'import-wf' }).commit();
+    `);
+
+    expect(output).toContain("readFileSync: 'deterministic'");
+    expect(output).toContain('function parse(readFileSync)');
+    expect(output).toContain('const parsed = parse(config.readFileSync)');
+  });
 });

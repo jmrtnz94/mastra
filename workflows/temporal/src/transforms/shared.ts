@@ -57,17 +57,74 @@ export function collectImportedNames(statement: t.ImportDeclaration): Set<string
   return names;
 }
 
-export function nodeReferencesName(node: t.Node, names: Set<string>): boolean {
-  let found = false;
-
-  walk(node, current => {
-    if (t.isIdentifier(current) && names.has(current.name)) {
-      found = true;
-      return false;
+function collectScopeBindings(node: t.Node): Set<string> {
+  const bindings = new Set<string>();
+  const addBindings = (bindingNode: t.Node) => {
+    for (const name of Object.keys(t.getBindingIdentifiers(bindingNode))) {
+      bindings.add(name);
     }
-  });
+  };
 
-  return found;
+  if (t.isFunction(node)) {
+    for (const parameter of node.params) {
+      addBindings(parameter);
+    }
+    if ((t.isFunctionDeclaration(node) || t.isFunctionExpression(node)) && node.id) {
+      addBindings(node.id);
+    }
+  }
+
+  const statements =
+    t.isProgram(node) || t.isBlockStatement(node)
+      ? node.body
+      : t.isFunction(node) && t.isBlockStatement(node.body)
+        ? node.body.body
+        : [];
+  for (const statement of statements) {
+    const declaration = t.isExportNamedDeclaration(statement) ? statement.declaration : statement;
+    if (
+      t.isVariableDeclaration(declaration) ||
+      t.isFunctionDeclaration(declaration) ||
+      t.isClassDeclaration(declaration)
+    ) {
+      addBindings(declaration);
+    }
+  }
+
+  return bindings;
+}
+
+export function nodeReferencesName(node: t.Node, names: Set<string>): boolean {
+  const visit = (current: t.Node, parent: t.Node | null, shadowedNames: Set<string>): boolean => {
+    if (
+      parent &&
+      t.isIdentifier(current) &&
+      names.has(current.name) &&
+      !shadowedNames.has(current.name) &&
+      t.isReferenced(current, parent)
+    ) {
+      return true;
+    }
+
+    const nextShadowedNames =
+      t.isFunction(current) || t.isProgram(current) || t.isBlockStatement(current)
+        ? new Set([...shadowedNames, ...collectScopeBindings(current)])
+        : shadowedNames;
+    const keys = (t.VISITOR_KEYS as Record<string, string[]>)[current.type] ?? [];
+    for (const key of keys) {
+      const value = (current as unknown as Record<string, unknown>)[key];
+      const children = Array.isArray(value) ? value : [value];
+      for (const child of children) {
+        if (child && typeof (child as t.Node).type === 'string' && visit(child as t.Node, current, nextShadowedNames)) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  };
+
+  return visit(node, null, new Set());
 }
 
 export function isWorkflowHelperDestructure(declaration: t.VariableDeclarator): boolean {

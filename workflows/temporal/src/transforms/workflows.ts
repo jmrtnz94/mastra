@@ -20,6 +20,7 @@ import {
   parseModule,
   parserPlugins,
   pruneUnusedTopLevelBindings,
+  walk,
 } from './shared';
 
 /**
@@ -599,6 +600,19 @@ function collectWorkflowTransformMetadata(program: t.Program, state: WorkflowTra
   }
 }
 
+function getForbiddenDynamicImportSource(node: t.Node): string | null {
+  let source: string | null = null;
+
+  walk(node, current => {
+    if (t.isImportExpression(current) && t.isStringLiteral(current.source) && isForbiddenWorkflowModule(current.source.value)) {
+      source = current.source.value;
+      return false;
+    }
+  });
+
+  return source;
+}
+
 function rewriteWorkflowImportDeclaration(statement: t.ImportDeclaration, state: WorkflowTransformState): void {
   if (statement.source.value === '@mastra/core/workflows') {
     const retainedSpecifiers = statement.specifiers.filter(
@@ -688,6 +702,14 @@ function rewriteWorkflowVariableDeclaration(
       continue;
     }
 
+    const forbiddenDynamicImportSource = getForbiddenDynamicImportSource(declaration.init);
+    if (forbiddenDynamicImportSource) {
+      state.strippedNames.add(declaration.id.name);
+      state.unavailableNames.add(declaration.id.name);
+      state.unavailableBindingSources.set(declaration.id.name, forbiddenDynamicImportSource);
+      continue;
+    }
+
     // If this initializer is a workflow builder chain, convert it into a new
     // exported runtime function. Otherwise keep it as-is unless it only exists
     // to support stripped `createStep` code.
@@ -751,6 +773,17 @@ function rewriteWorkflowVariableDeclaration(
 function rewriteWorkflowStatement(statement: t.Statement, filePath: string, state: WorkflowTransformState): void {
   if (t.isImportDeclaration(statement)) {
     rewriteWorkflowImportDeclaration(statement, state);
+    return;
+  }
+
+  const forbiddenDynamicImportSource = getForbiddenDynamicImportSource(statement);
+  if (forbiddenDynamicImportSource && !getVariableDeclarationFromStatement(statement)) {
+    const declaration = t.isExportNamedDeclaration(statement) ? statement.declaration : statement;
+    if ((t.isFunctionDeclaration(declaration) || t.isClassDeclaration(declaration)) && declaration.id) {
+      state.strippedNames.add(declaration.id.name);
+      state.unavailableNames.add(declaration.id.name);
+      state.unavailableBindingSources.set(declaration.id.name, forbiddenDynamicImportSource);
+    }
     return;
   }
 
