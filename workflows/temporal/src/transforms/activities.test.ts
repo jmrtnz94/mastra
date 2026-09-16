@@ -100,6 +100,21 @@ describe('activity transform', () => {
     expect(output).toContain('const fetchWeather = createStep({');
   });
 
+  it('preserves Node dependencies used by activities', async () => {
+    const output = await transform(`
+      import { readFileSync } from 'node:fs';
+      import { createStep } from '@mastra/core/workflows';
+
+      export const readConfig = createStep({
+        id: 'read-config',
+        execute: async () => ({ config: readFileSync('/tmp/config.json', 'utf8') }),
+      });
+    `);
+
+    expect(output).toContain("from 'node:fs'");
+    expect(output).toContain("readFileSync('/tmp/config.json', 'utf8')");
+  });
+
   it('keeps supporting declarations needed by extracted activities while stripping workflow setup', async () => {
     const output = await transform(`
       import { z } from 'zod';

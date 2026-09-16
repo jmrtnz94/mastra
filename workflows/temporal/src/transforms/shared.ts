@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { builtinModules } from 'node:module';
 import { parse } from '@babel/parser';
 import type { ParserPlugin } from '@babel/parser';
 import * as t from '@babel/types';
@@ -25,9 +26,17 @@ export function isTemporalHelperModule(source: string): boolean {
 }
 
 export const strippedExternalModules = new Set(['@temporalio/client', '@temporalio/envconfig']);
+const nodeBuiltinModules = new Set(builtinModules.flatMap(moduleName => [moduleName, `node:${moduleName}`]));
 
 export function isStrippedExternalModule(source: string): boolean {
   return typeof source === 'string' && strippedExternalModules.has(source);
+}
+
+export function isForbiddenWorkflowModule(source: string): boolean {
+  return (
+    typeof source === 'string' &&
+    (isStrippedExternalModule(source) || source.startsWith('node:') || nodeBuiltinModules.has(source))
+  );
 }
 
 export function collectImportedNames(statement: t.ImportDeclaration): Set<string> {

@@ -12,8 +12,8 @@ import {
   getCreateStepId,
   getObjectPropertyName,
   isCreateWorkflowCall,
+  isForbiddenWorkflowModule,
   isIdentifierNamed,
-  isStrippedExternalModule,
   isTemporalHelperModule,
   isWorkflowHelperDestructure,
   nodeReferencesName,
@@ -522,6 +522,8 @@ interface WorkflowTransformState {
   committedWorkflowNames: Set<string>;
   inlineExportedWorkflowNames: Set<string>;
   strippedNames: Set<string>;
+  unavailableNames: Set<string>;
+  unavailableBindingSources: Map<string, string>;
   stepBindings: Map<string, string>;
   workflowBindings: Map<string, string>;
   workflowExports: TemporalWorkflowExport[];
@@ -535,6 +537,8 @@ function createWorkflowTransformState(program: t.Program, filePath: string): Wor
     committedWorkflowNames: new Set<string>(),
     inlineExportedWorkflowNames: new Set<string>(),
     strippedNames: new Set<string>(),
+    unavailableNames: new Set<string>(),
+    unavailableBindingSources: new Map<string, string>(),
     stepBindings: collectStepBindings(program),
     workflowBindings: collectWorkflowBindings(program, filePath),
     workflowExports: [],
@@ -612,9 +616,13 @@ function rewriteWorkflowImportDeclaration(statement: t.ImportDeclaration, state:
     return;
   }
 
-  if (isTemporalHelperModule(statement.source.value) || isStrippedExternalModule(statement.source.value)) {
+  if (isTemporalHelperModule(statement.source.value) || isForbiddenWorkflowModule(statement.source.value)) {
     for (const name of collectImportedNames(statement)) {
       state.strippedNames.add(name);
+      if (isForbiddenWorkflowModule(statement.source.value) || (name !== 'createWorkflow' && name !== 'createStep')) {
+        state.unavailableNames.add(name);
+        state.unavailableBindingSources.set(name, statement.source.value);
+      }
     }
     return;
   }
@@ -686,6 +694,16 @@ function rewriteWorkflowVariableDeclaration(
     const workflowChain = parseWorkflowChain(declaration.init);
     if (!workflowChain && nodeReferencesName(declaration.init, state.strippedNames)) {
       state.strippedNames.add(declaration.id.name);
+      const unavailableReferences = [...state.unavailableNames].filter(name =>
+        nodeReferencesName(declaration.init!, new Set([name])),
+      );
+      if (unavailableReferences.length > 0) {
+        state.unavailableNames.add(declaration.id.name);
+        const source = unavailableReferences.map(name => state.unavailableBindingSources.get(name)).find(Boolean);
+        if (source) {
+          state.unavailableBindingSources.set(declaration.id.name, source);
+        }
+      }
       continue;
     }
 
@@ -771,8 +789,84 @@ function rewriteWorkflowStatement(statement: t.Statement, filePath: string, stat
   state.statements.push(statement);
 }
 
+function stripStatementsDependingOnUnavailableBindings(state: WorkflowTransformState): t.Statement[] {
+  let statements = state.statements;
+  let changed = true;
+  const workflowExportNames = new Set(state.workflowExports.map(workflow => workflow.exportName));
+
+  const markUnavailable = (name: string, referencedNames: string[]) => {
+    state.strippedNames.add(name);
+    state.unavailableNames.add(name);
+    const source = referencedNames.map(reference => state.unavailableBindingSources.get(reference)).find(Boolean);
+    if (source) {
+      state.unavailableBindingSources.set(name, source);
+    }
+  };
+
+  while (changed) {
+    changed = false;
+    const retainedStatements: t.Statement[] = [];
+
+    for (const statement of statements) {
+      const declaration = t.isExportNamedDeclaration(statement) ? statement.declaration : statement;
+
+      if (t.isVariableDeclaration(declaration)) {
+        const retainedDeclarations = declaration.declarations.filter(variable => {
+          if (!variable.init || !t.isIdentifier(variable.id)) {
+            return true;
+          }
+
+          const referencedNames = [...state.unavailableNames].filter(name =>
+            nodeReferencesName(variable.init!, new Set([name])),
+          );
+          if (referencedNames.length === 0) {
+            return true;
+          }
+
+          if (workflowExportNames.has(variable.id.name)) {
+            const source = referencedNames.map(name => state.unavailableBindingSources.get(name)).find(Boolean);
+            throw new Error(
+              `Temporal workflow ${variable.id.name} depends on ${referencedNames.join(', ')} from ${source ?? 'an unavailable workflow binding'}. Move that code into an activity or provide its result as workflow input.`,
+            );
+          }
+
+          markUnavailable(variable.id.name, referencedNames);
+          changed = true;
+          return false;
+        });
+
+        if (retainedDeclarations.length === 0) {
+          continue;
+        }
+
+        const rewrittenDeclaration = t.variableDeclaration(declaration.kind, retainedDeclarations);
+        retainedStatements.push(t.isExportNamedDeclaration(statement) ? t.exportNamedDeclaration(rewrittenDeclaration) : rewrittenDeclaration);
+        continue;
+      }
+
+      const referencedNames = [...state.unavailableNames].filter(name =>
+        nodeReferencesName(statement, new Set([name])),
+      );
+      if (referencedNames.length === 0) {
+        retainedStatements.push(statement);
+        continue;
+      }
+
+      if ((t.isFunctionDeclaration(declaration) || t.isClassDeclaration(declaration)) && declaration.id) {
+        markUnavailable(declaration.id.name, referencedNames);
+      }
+      changed = true;
+    }
+
+    statements = retainedStatements;
+  }
+
+  return statements;
+}
+
 async function finalizeWorkflowModule(state: WorkflowTransformState): Promise<BuildTemporalWorkflowModuleResult> {
-  const transformedSource = generate(t.file(t.program(pruneUnusedTopLevelBindings(state.statements), [], 'module')), {
+  const availableStatements = stripStatementsDependingOnUnavailableBindings(state);
+  const transformedSource = generate(t.file(t.program(pruneUnusedTopLevelBindings(availableStatements), [], 'module')), {
     sourceMaps: true,
   });
 

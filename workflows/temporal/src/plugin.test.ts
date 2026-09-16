@@ -98,7 +98,11 @@ describe('Temporal prebuild integration', () => {
 
     const entryFile = path.join(projectSrcDir, 'index.ts');
     const compiledEntrySource = `
+      import { readFileSync } from 'node:fs';
       import { init } from '@mastra/temporal';
+
+      const applicationConfig = readFileSync(new URL(import.meta.url), 'utf8');
+      void applicationConfig;
 
       class Mastra {
         constructor(config) {
@@ -114,7 +118,9 @@ describe('Temporal prebuild integration', () => {
 
       const step1 = createStep({
         id: 'step1',
-        execute: async ({ inputData }) => ({ value: inputData.input + '-step1' }),
+        execute: async ({ inputData }) => ({
+          value: applicationConfig ? inputData.input + '-step1' : inputData.input,
+        }),
       });
 
       const innerStep = createStep({
@@ -192,8 +198,12 @@ describe('Temporal prebuild integration', () => {
     expect(workflowSource).toContain('.then("step4")');
     expect(workflowSource).not.toContain('export const mastra');
     expect(workflowSource).not.toContain('createStep({');
+    expect(workflowSource).not.toContain("from 'node:fs'");
+    expect(workflowSource).not.toContain('applicationConfig');
     expect(workflowSource).toContain("startToCloseTimeout: '5 minutes'");
 
+    expect(activitiesSource).toContain("from 'node:fs'");
+    expect(activitiesSource).toContain('applicationConfig');
     expect(activitiesSource).toContain('function createStep(args)');
     expect(activitiesSource).toContain('const step1 = createStep({');
     expect(activitiesSource).toContain('const innerStep = createStep({');

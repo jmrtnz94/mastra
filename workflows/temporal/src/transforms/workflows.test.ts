@@ -126,4 +126,57 @@ describe('workflow transform', () => {
 
     expect(output).toMatch(/createWorkflow\('weather-workflow',\s*\{\s*startToCloseTimeout: '5 minutes'\s*\}\)/);
   });
+
+  it('removes Node imports used by top-level application initialization', async () => {
+    const output = await transform(`
+      import { readFileSync } from 'node:fs';
+      import { createStep, createWorkflow } from '@mastra/core/workflows';
+
+      readFileSync(new URL(import.meta.url));
+
+      const step = createStep({ id: 'one', execute: async () => ({}) });
+      export const workflow = createWorkflow({ id: 'import-wf' }).then(step).commit();
+    `);
+
+    expect(output).not.toContain("from 'node:fs'");
+    expect(output).not.toContain('readFileSync');
+  });
+
+  it('transitively removes application initialization that depends on Node imports', async () => {
+    const output = await transform(`
+      import { readFileSync } from 'node:fs';
+      import { createStep, createWorkflow } from '@mastra/core/workflows';
+
+      const config = readFileSync(new URL('config.json', import.meta.url), 'utf8');
+      const application = { config };
+      void application;
+
+      const step = createStep({ id: 'one', execute: async () => ({}) });
+      export const workflow = createWorkflow({ id: 'import-wf' }).then(step).commit();
+    `);
+
+    expect(output).not.toContain("from 'node:fs'");
+    expect(output).not.toContain('readFileSync');
+    expect(output).not.toContain('config.json');
+    expect(output).not.toContain('application');
+  });
+
+  it('rejects workflows that require Node imports', async () => {
+    await expect(
+      transform(`
+        import { readFileSync } from 'node:fs';
+        import { init } from '@mastra/temporal';
+
+        const timeout = readFileSync(new URL('timeout.txt', import.meta.url), 'utf8');
+        const { createWorkflow } = init({
+          client: undefined,
+          taskQueue: 'mastra',
+          startToCloseTimeout: timeout,
+        });
+        export const workflow = createWorkflow({ id: 'import-wf' }).commit();
+      `),
+    ).rejects.toThrow(
+      'Temporal workflow importWfWorkflow depends on timeout from node:fs. Move that code into an activity or provide its result as workflow input.',
+    );
+  });
 });
