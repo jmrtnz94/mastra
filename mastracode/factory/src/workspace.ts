@@ -16,7 +16,9 @@ import type {
   WorkspaceSandbox,
 } from '@mastra/core/workspace';
 import { getFactoryAuthOrgId, getFactoryAuthUserFromContext, getFactoryAuthUserId } from './auth.js';
+import type { SourceControlRegistry } from './capabilities/source-control-registry.js';
 import type { MastraFactorySandboxConfig } from './factory.js';
+import type { FactoryIntegration } from './integrations/base.js';
 import type { GithubIntegration } from './integrations/github/integration.js';
 import { getGithubPat } from './integrations/github/pat.js';
 import type { GithubPatKind } from './integrations/github/pat.js';
@@ -799,5 +801,42 @@ export function createWorkspaceFactory(options: CreateWorkspaceFactoryOptions = 
 
     fireEagerStart();
     return workspace;
+  };
+}
+
+/** Route workspaces by the session's stored provider, keeping the GitHub fallback compatible. */
+export function createIntegrationWorkspaceFactory(
+  options: CreateWorkspaceFactoryOptions & {
+    integrations: FactoryIntegration[];
+    sourceControlRegistry: SourceControlRegistry;
+  },
+): ReturnType<typeof createWorkspaceFactory> {
+  const { github, integrations, sourceControlRegistry, ...shared } = options;
+  const fallback = createWorkspaceFactory({ ...shared, github });
+  const resolvers = new Map(
+    integrations.flatMap(integration =>
+      integration.workspaceFactory ? [[integration.id, integration.workspaceFactory(shared)] as const] : [],
+    ),
+  );
+  return async context => {
+    const controller = context.requestContext.get('controller') as
+      | AgentControllerRequestContext<MastraCodeState>
+      | undefined;
+    const resolved = controller?.resourceId ? await sourceControlRegistry.resolveSession(controller.resourceId) : null;
+    if (!resolved) return fallback(context);
+    const user = getFactoryAuthUserFromContext(context.requestContext);
+    const userId = getFactoryAuthUserId(user);
+    if (
+      !userId ||
+      getFactoryAuthOrgId(user) !== resolved.session.orgId ||
+      (resolved.session.visibility === 'private' && userId !== resolved.session.userId)
+    ) {
+      throw new Error('Factory session is not available to the current user.');
+    }
+    const resolver = resolvers.get(resolved.storage.integrationId);
+    if (resolver) return resolver(context);
+    if (resolved.storage.integrationId !== 'github')
+      throw new Error('The repository provider does not supply Factory workspaces.');
+    return fallback(context);
   };
 }

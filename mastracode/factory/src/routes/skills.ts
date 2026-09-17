@@ -5,6 +5,7 @@ import type { ApiRoute } from '@mastra/core/server';
 import { registerApiRoute } from '@mastra/core/server';
 import type { Context } from 'hono';
 
+import type { SourceControlRegistry } from '../capabilities/source-control-registry.js';
 import { peekSessionSandbox } from '../sandbox/session-sandbox.js';
 import { listFactorySkills } from '../skills/catalog.js';
 import { resolveSkillInvocation, SkillInvocationError } from '../skills/service.js';
@@ -37,6 +38,7 @@ export interface SkillRoutesDeps extends RouteDependencies {
   controllerId: string;
   controller: Pick<AgentController<MastraCodeState>, 'getSessionByResource'>;
   sourceControlStorage?: SourceControlStorageHandle;
+  sourceControlRegistry?: Pick<SourceControlRegistry, 'forRepository'>;
   ensureSourceControlReady?: () => Promise<void>;
   authorizeSessionAddress?: (
     context: Context,
@@ -80,7 +82,8 @@ export class SkillRoutes extends Route<SkillRoutesDeps> {
     context: Context,
     address: { resourceId: string; projectRepositoryId?: string; scope?: string },
   ): Promise<SessionAuthorizationResult> {
-    const { auth, sourceControlStorage: storage, ensureSourceControlReady } = this.deps;
+    const { auth, sourceControlStorage, sourceControlRegistry, ensureSourceControlReady } = this.deps;
+    let storage = sourceControlStorage;
     if (!auth.enabled()) return { allowed: true };
 
     await auth.ensureUser(context);
@@ -105,7 +108,7 @@ export class SkillRoutes extends Route<SkillRoutesDeps> {
     if (!tenant.orgId || !address.scope) {
       return { allowed: false, status: 403, code: 'session_forbidden', message: 'Session access denied.' };
     }
-    if (!storage) {
+    if (!storage && !sourceControlRegistry) {
       return { allowed: false, status: 403, code: 'session_forbidden', message: 'Session access denied.' };
     }
     if (ensureSourceControlReady) {
@@ -115,6 +118,9 @@ export class SkillRoutes extends Route<SkillRoutesDeps> {
         return { allowed: false, status: 403, code: 'session_forbidden', message: 'Session access denied.' };
       }
     }
+    if (sourceControlRegistry)
+      storage = (await sourceControlRegistry.forRepository(tenant.orgId, address.projectRepositoryId)) ?? undefined;
+    if (!storage) return { allowed: false, status: 403, code: 'session_forbidden', message: 'Session access denied.' };
     const projectRepository = await storage.projectRepositories.get({
       orgId: tenant.orgId,
       id: address.projectRepositoryId,

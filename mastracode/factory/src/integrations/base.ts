@@ -42,6 +42,7 @@ import type { MemorySettingsStorage } from '../storage/domains/memory-settings/b
 import type { FactoryProjectsStorage } from '../storage/domains/projects/base.js';
 import type { SourceControlStorageHandle } from '../storage/domains/source-control/base.js';
 import type { WorkItemsStorage } from '../storage/domains/work-items/base.js';
+import type { CreateWorkspaceFactoryOptions, createWorkspaceFactory } from '../workspace.js';
 
 /** Factory-owned hooks integrations may invoke. */
 export interface IntegrationHooks {
@@ -178,6 +179,8 @@ export interface FactoryChannelsConfig extends Omit<AgentControllerChannelsConfi
  * (validated at construction), their API surface, and their HTTP routes.
  */
 export interface FactoryIntegration {
+  /** Provider-owned workspace construction, selected from persisted session ownership. */
+  workspaceFactory?(options: Omit<CreateWorkspaceFactoryOptions, 'github'>): ReturnType<typeof createWorkspaceFactory>;
   /** Stable identifier: `'github'`, `'linear'`, custom ids for third parties. */
   readonly id: string;
   /** Issue-oriented capability consumed by Intake. */

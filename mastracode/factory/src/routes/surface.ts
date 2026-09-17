@@ -7,6 +7,7 @@ import type { FactoryStorage } from '@mastra/core/storage';
 
 import { boardForWorkItem } from '../boards/index.js';
 import type { BoardRegistry } from '../boards/index.js';
+import { SourceControlRegistry } from '../capabilities/source-control-registry.js';
 import type { FactoryIntegration, IntegrationContext } from '../integrations/base.js';
 import { getGithubFeatureDiagnostics } from '../integrations/github/config.js';
 import type { GithubIntegration } from '../integrations/github/integration.js';
@@ -216,7 +217,7 @@ async function reuseBoundSession(
  * what it forwards.
  */
 export async function prepareFactoryRuleBinding(
-  github: GithubIntegration,
+  provider: Pick<GithubIntegration, 'sourceControlStorage'> | SourceControlRegistry,
   coordinator: Pick<FactoryStartCoordinator, 'prepare'>,
   projects: FactoryProjectsStorage,
   boards: BoardRegistry,
@@ -246,15 +247,32 @@ export async function prepareFactoryRuleBinding(
     }
     const repositorySlug =
       typeof input.item.metadata?.repository === 'string' ? input.item.metadata.repository : undefined;
+    const sourceControl =
+      'forProject' in provider
+        ? await provider.forProject({
+            orgId: input.record.orgId,
+            factoryProjectId: input.record.factoryProjectId,
+            repositorySlug,
+            integrationId:
+              typeof input.item.metadata?.sourceControlIntegrationId === 'string'
+                ? input.item.metadata.sourceControlIntegrationId
+                : undefined,
+          })
+        : provider.sourceControlStorage;
+    if (!sourceControl)
+      throw new FactoryDispatchError(
+        'unsupported_provider_item',
+        'No configured repository provider matches this Factory run.',
+      );
     // Re-preparing a binding (server restart, retired controller session) must
     // land in the role's existing session: minting a replacement would repoint
     // the work item, flip the session's owner to the approver, and orphan the
     // previous sandbox.
     const approver = input.record.approvedBy ?? undefined;
     const preparedSession =
-      (await reuseBoundSession(github.sourceControlStorage, input)) ??
+      (await reuseBoundSession(sourceControl, input)) ??
       (await ensureFactorySourceSession({
-        sourceControl: github.sourceControlStorage,
+        sourceControl,
         orgId: input.record.orgId,
         factoryProjectId: input.record.factoryProjectId,
         repositorySlug,
@@ -454,8 +472,13 @@ export function assembleFactoryApiRoutes(deps: FactoryApiRoutesDeps): ApiRoute[]
   const emitAudit: AuditEmitter['emit'] = args => deps.audit.emit(args);
   const registrations = deps.integrations ?? [];
   const githubRegistration = registrations.find(({ integration }) => integration.id === 'github');
-  const githubStorage = githubRegistration ? deps.sourceControlStorage.forIntegration('github') : undefined;
-  const githubIntegration = githubRegistration?.integration as GithubIntegration | undefined;
+  const sourceRegistrations = registrations.filter(({ integration }) => integration.versionControl);
+  const sourceControlRegistry = new SourceControlRegistry([
+    deps.sourceControlStorage.forIntegration('github'),
+    ...sourceRegistrations
+      .filter(({ integration }) => integration.id !== 'github')
+      .map(({ integration }) => deps.sourceControlStorage.forIntegration(integration.id)),
+  ]);
 
   const integrationRoutes = registrations.flatMap(registration => {
     const { integration } = registration;
@@ -495,18 +518,18 @@ export function assembleFactoryApiRoutes(deps: FactoryApiRoutesDeps): ApiRoute[]
         deps.controller,
         deps.domains.workItems,
         transitionService,
-        githubIntegration?.sourceControlStorage,
+        sourceControlRegistry,
         deps.domains.memorySettings,
       )
     : undefined;
   if (transitionService && startCoordinator) {
     deps.onFactoryRuntime?.({
       transitionService,
-      ...(githubIntegration
+      ...(sourceRegistrations.length
         ? {
             prepareBinding: (input: FactoryBindingPreparationInput) =>
               prepareFactoryRuleBinding(
-                githubIntegration,
+                sourceControlRegistry,
                 startCoordinator,
                 deps.domains.projects,
                 deps.boardRegistry,
@@ -522,7 +545,7 @@ export function assembleFactoryApiRoutes(deps: FactoryApiRoutesDeps): ApiRoute[]
       root: deps.fsRoot,
       sessionFs: {
         auth: deps.auth,
-        sessions: deps.sourceControlStorage.forIntegration('github').sessions,
+        sessions: sourceControlRegistry.sessions,
         filesystem: deps.domains.filesystem,
       },
     }),
@@ -532,7 +555,7 @@ export function assembleFactoryApiRoutes(deps: FactoryApiRoutesDeps): ApiRoute[]
       authStorage: deps.authStorage,
       modelCredentials: deps.domains.modelCredentials,
       modelPacks: deps.domains.modelPacks,
-      sourceControlSessions: deps.sourceControlStorage.forIntegration('github').sessions,
+      sourceControlSessions: sourceControlRegistry.sessions,
       memorySettings: deps.domains.memorySettings,
       factoryProjects: deps.domains.projects,
       customProviders: deps.domains.customProviders,
@@ -551,8 +574,8 @@ export function assembleFactoryApiRoutes(deps: FactoryApiRoutesDeps): ApiRoute[]
       auth: deps.auth,
       controllerId: deps.controllerId,
       controller: deps.controller,
-      sourceControlStorage: githubStorage,
-      ensureSourceControlReady: githubRegistration?.ensureReady,
+      sourceControlRegistry,
+      ensureSourceControlReady: () => deps.sourceControlStorage.ensureReady(),
     }).routes(),
     ...integrationRoutes,
     ...absentStubs,

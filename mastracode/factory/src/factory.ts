@@ -43,6 +43,7 @@ import {
 } from './auth.js';
 import { createBoardRegistry, workItemPhaseSemantics } from './boards/index.js';
 import type { BoardRegistry, InstalledBoard } from './boards/index.js';
+import { SourceControlRegistry } from './capabilities/source-control-registry.js';
 import { touchFeed } from './feed-events.js';
 import type { FactoryIntegration, IntegrationPostToolContext, IntegrationTools } from './integrations/base.js';
 import { reconcileGithubAcceptanceLabels } from './integrations/github/acceptance-labels.js';
@@ -114,7 +115,7 @@ import { createFactorySupervisorReadTools } from './supervisor/read-tools.js';
 import { hydrateSupervisorSession, parseSupervisorResourceId, resolveSupervisorScope } from './supervisor/session.js';
 import { createFactorySupervisorWriteTools } from './supervisor/write-tools.js';
 import { timedPhase } from './timing.js';
-import { createWorkspaceFactory, FactoryWorkspaceRegistry } from './workspace.js';
+import { createIntegrationWorkspaceFactory, FactoryWorkspaceRegistry } from './workspace.js';
 import type { FactorySandboxStart } from './workspace.js';
 
 type BuildApiRoutesDeps = Pick<FactoryApiRoutesDeps, 'controller' | 'authStorage'>;
@@ -584,6 +585,15 @@ export class MastraFactory {
       | GithubIntegration
       | undefined;
     const workItemsReady = storage.isDomainReady('work-items');
+    const sourceControlHandles = integrations
+      .filter(integration => integration.versionControl)
+      .map(integration => sourceControlStorage.forIntegration(integration.id));
+    // Historical GitHub sessions still supply memory/settings ownership when
+    // credentials are temporarily absent from the deployment configuration.
+    const sourceControlRegistry = new SourceControlRegistry([
+      sourceControlStorage.forIntegration('github'),
+      ...sourceControlHandles.filter(handle => handle.integrationId !== 'github'),
+    ]);
     const sessionRetirement =
       sandboxConfig && storage.isDomainReady('source-control')
         ? new SessionRetirementCoordinator({
@@ -591,14 +601,17 @@ export class MastraFactory {
           })
         : undefined;
     const retireTerminalSessions =
-      sessionRetirement && githubIntegration && workItemsReady
-        ? async ({ orgId, workItemId }: { orgId: string; workItemId: string }) =>
-            sessionRetirement.retireWorkItemSessions({
-              workItems: workItemsStorage,
-              sourceControl: sourceControlStorage.forIntegration(githubIntegration.id),
-              orgId,
-              workItemId,
-            })
+      sessionRetirement && sourceControlHandles.length > 0 && workItemsReady
+        ? async ({ orgId, workItemId }: { orgId: string; workItemId: string }) => {
+            for (const sourceControl of sourceControlHandles) {
+              await sessionRetirement.retireWorkItemSessions({
+                workItems: workItemsStorage,
+                sourceControl,
+                orgId,
+                workItemId,
+              });
+            }
+          }
         : undefined;
     // Terminal-stage cleanup: ingest any trailing tool results from the item's
     // bound threads, then revoke the bindings so completed items leave the
@@ -644,31 +657,30 @@ export class MastraFactory {
       versionControlIntegrationIds: integrations
         .filter(integration => integration.versionControl)
         .map(integration => integration.id),
-      ...(githubIntegration
-        ? {
-            resolveRepository: async ({ integrationId, orgId, installationId, externalId, slug }) => {
-              if (integrationId !== githubIntegration.id) return null;
-              const installation = await githubIntegration.sourceControlStorage.installations.get({
-                orgId,
-                id: installationId,
-              });
-              if (!installation) return null;
-              const repositories = await githubIntegration.listInstallationRepos(Number(installation.externalId));
-              const selected = repositories.find(repo => repo.id.toString() === externalId && repo.fullName === slug);
-              if (!selected) return null;
-              return githubIntegration.sourceControlStorage.repositories.upsert({
-                orgId,
-                input: {
-                  installationId,
-                  externalId,
-                  slug: selected.fullName,
-                  defaultBranch: isValidGitRef(selected.defaultBranch) ? selected.defaultBranch : 'main',
-                  providerMetadata: { private: selected.private, owner: selected.owner },
-                },
-              });
-            },
-          }
-        : {}),
+      resolveRepository: async ({ integrationId, orgId, installationId, externalId, slug }) => {
+        const provider = integrations.find(integration => integration.id === integrationId)?.versionControl;
+        if (provider?.resolveRepository) return provider.resolveRepository({ orgId, installationId, externalId, slug });
+        // Compatibility for existing direct and Platform GitHub adapters.
+        if (!githubIntegration || integrationId !== githubIntegration.id) return null;
+        const installation = await githubIntegration.sourceControlStorage.installations.get({
+          orgId,
+          id: installationId,
+        });
+        if (!installation) return null;
+        const repositories = await githubIntegration.listInstallationRepos(Number(installation.externalId));
+        const selected = repositories.find(repo => repo.id.toString() === externalId && repo.fullName === slug);
+        if (!selected) return null;
+        return githubIntegration.sourceControlStorage.repositories.upsert({
+          orgId,
+          input: {
+            installationId,
+            externalId,
+            slug: selected.fullName,
+            defaultBranch: isValidGitRef(selected.defaultBranch) ? selected.defaultBranch : 'main',
+            providerMetadata: { private: selected.private, owner: selected.owner },
+          },
+        });
+      },
       ...(sessionRetirement ? { sessionRetirement } : {}),
       ...(workItemsReady ? { workItems: workItemsStorage } : {}),
     });
@@ -739,7 +751,9 @@ export class MastraFactory {
       prepareAgentControllerMount({
         controllerId: CONTROLLER_ID,
         coAuthor: { name: 'mastra-platform[bot]' },
-        workspace: createWorkspaceFactory({
+        workspace: createIntegrationWorkspaceFactory({
+          integrations,
+          sourceControlRegistry,
           ...(sandboxConfig ? { sandbox: sandboxConfig } : {}),
           ...(this.#config.sandboxStart ? { sandboxStart: this.#config.sandboxStart } : {}),
           ...(githubIntegration ? { github: githubIntegration } : {}),
@@ -1054,16 +1068,16 @@ export class MastraFactory {
     prepared.base.controller.onSessionCreated(session => {
       observeSessionFilesystem(session, {
         filesystem: filesystemStorage,
-        sourceControl: sourceControlStorage.forIntegration('github'),
+        sourceControl: sourceControlRegistry,
       });
       observeSessionFirstMessage(session, {
-        sourceControl: sourceControlStorage.forIntegration('github'),
+        sourceControl: sourceControlRegistry,
       });
       observeSessionFirstExec(session, {
-        sourceControl: sourceControlStorage.forIntegration('github'),
+        sourceControl: sourceControlRegistry,
       });
       observeSessionThreadTitle(session, {
-        sourceControl: sourceControlStorage.forIntegration('github'),
+        sourceControl: sourceControlRegistry,
       });
       observeSessionRunEnd(session, { audit: auditDomain });
     });
@@ -1091,7 +1105,7 @@ export class MastraFactory {
     prepared.base.controller.onSessionCreated(
       session =>
         hydrateSessionMemorySettings(session, {
-          sourceControl: sourceControlStorage.forIntegration('github'),
+          sourceControl: sourceControlRegistry,
           projects: factoryProjectsStorage,
           memorySettings: memorySettingsStorage,
         }),
@@ -1103,7 +1117,7 @@ export class MastraFactory {
     prepared.base.controller.onSessionCreated(
       session =>
         hydrateSessionModelPack(session, {
-          sourceControl: sourceControlStorage.forIntegration('github'),
+          sourceControl: sourceControlRegistry,
           workItems: workItemsStorage,
           modelPacks: modelPacksStorage,
         }),

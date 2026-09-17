@@ -105,6 +105,8 @@ vi.mock('./integrations/github/sandbox', async importOriginal => ({
   runTeardownCommand: (...args: unknown[]) => (mocks.runTeardownCommand as any)(...args),
 }));
 
+import type { SourceControlRegistry } from './capabilities/source-control-registry.js';
+import type { FactoryIntegration } from './integrations/base.js';
 import { MaterializeError, SetupCommandError } from './integrations/github/sandbox.js';
 import { injectGithubToken } from './integrations/github/token-refresh.js';
 import {
@@ -114,6 +116,7 @@ import {
   recordFailedSetupCommand,
 } from './sandbox/session-sandbox.js';
 import {
+  createIntegrationWorkspaceFactory,
   createWorkspaceFactory,
   FactorySkillSource,
   FactoryWorkspaceRegistry,
@@ -121,6 +124,52 @@ import {
 } from './workspace.js';
 
 const tempDirs: string[] = [];
+
+describe('provider workspace selection', () => {
+  function registry(visibility = 'private') {
+    return {
+      resolveSession: vi.fn(async () => ({
+        storage: { integrationId: 'gitlab' },
+        session: { orgId: 'org-1', userId: 'user-1', visibility },
+      })),
+    } as unknown as SourceControlRegistry;
+  }
+
+  it('uses persisted ownership regardless of integration order', async () => {
+    const github = vi.fn();
+    const gitlab = vi.fn(async () => undefined);
+    const integrations = [
+      { id: 'github', workspaceFactory: () => github },
+      { id: 'gitlab', workspaceFactory: () => gitlab },
+    ] as unknown as FactoryIntegration[];
+    const resolve = createIntegrationWorkspaceFactory({ integrations, sourceControlRegistry: registry() });
+    await resolve({ requestContext: createGithubRequestContext('project-1', 'session-1') });
+    expect(gitlab).toHaveBeenCalledOnce();
+    expect(github).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { organizationId: 'org-2', workosId: 'user-1' },
+    { organizationId: 'org-1', workosId: 'user-2' },
+  ])('authorizes tenant and private-session owner before calling provider code', async user => {
+    const gitlab = vi.fn();
+    const resolve = createIntegrationWorkspaceFactory({
+      sourceControlRegistry: registry(),
+      integrations: [{ id: 'gitlab', workspaceFactory: () => gitlab }] as unknown as FactoryIntegration[],
+    });
+    await expect(
+      resolve({ requestContext: createGithubRequestContext('project-1', 'session-1', user) }),
+    ).rejects.toThrow('not available');
+    expect(gitlab).not.toHaveBeenCalled();
+  });
+
+  it('does not fall back to GitHub for a provider missing a workspace adapter', async () => {
+    const resolve = createIntegrationWorkspaceFactory({ integrations: [], sourceControlRegistry: registry() });
+    await expect(resolve({ requestContext: createGithubRequestContext('project-1', 'session-1') })).rejects.toThrow(
+      'does not supply',
+    );
+  });
+});
 
 /**
  * `setEnv` takes an updater rather than a name/value pair, so the assertions

@@ -234,6 +234,13 @@ export interface UpdateReviewersInput extends PullRequestRef {
 
 /** Fixed repository, pull-request lifecycle, review, comment, and reviewer contract. */
 export interface VersionControl {
+  /** Validate a selected repository through the provider and persist its metadata. */
+  resolveRepository?(input: {
+    orgId: string;
+    installationId: string;
+    externalId: string;
+    slug: string;
+  }): Promise<SourceControlRepository | null>;
   initialize(input: { storage: SourceControlStorageHandle }): void;
   registerInstallation(input: {
     orgId: string;

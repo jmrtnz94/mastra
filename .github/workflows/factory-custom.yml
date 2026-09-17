@@ -33,6 +33,8 @@ jobs:
       - name: Build matching backend and CLI with UI
         run: pnpm turbo build --filter ./mastracode/factory --filter ./packages/cli
       - name: Check backend and UI
+        env:
+          OPENAI_API_KEY: factory-test-placeholder
         run: |
           pnpm --filter ./mastracode/factory check
           pnpm --filter ./mastracode/factory-ui typecheck

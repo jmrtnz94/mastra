@@ -84,14 +84,18 @@ export class FactoryStartCoordinator {
   readonly #controller: FactoryController;
   readonly #storage: WorkItemsStorage;
   readonly #transitionService?: Pick<FactoryTransitionService, 'transition'>;
-  readonly #sourceControl?: SourceControlStorageHandle;
+  readonly #sourceControl?:
+    | SourceControlStorageHandle
+    | { forSession(sessionId: string): Promise<SourceControlStorageHandle | null> };
   readonly #memorySettings?: MemorySettingsStorage;
 
   constructor(
     controller: FactoryController,
     storage: WorkItemsStorage,
     transitionService?: Pick<FactoryTransitionService, 'transition'>,
-    sourceControl?: SourceControlStorageHandle,
+    sourceControl?:
+      | SourceControlStorageHandle
+      | { forSession(sessionId: string): Promise<SourceControlStorageHandle | null> },
     memorySettings?: MemorySettingsStorage,
   ) {
     this.#controller = controller;
@@ -104,7 +108,12 @@ export class FactoryStartCoordinator {
   async prepare(request: FactoryStartRequest): Promise<FactoryStartPreparedResult> {
     const storage = this.#storage;
     if (!this.#sourceControl) throw new Error('Factory source control storage is unavailable');
-    const sourceSession = await resolveSourceSession(this.#sourceControl, request);
+    const sourceControl =
+      'forSession' in this.#sourceControl
+        ? await this.#sourceControl.forSession(request.sessionId)
+        : this.#sourceControl;
+    if (!sourceControl) throw new Error('Factory session not found');
+    const sourceSession = await resolveSourceSession(sourceControl, request);
     const requestContext = request.requestContext ?? new RequestContext();
     // Factory runs resolve model credentials org > user: the org's shared keys
     // win, with the acting user's personal credentials as a fallback — a board

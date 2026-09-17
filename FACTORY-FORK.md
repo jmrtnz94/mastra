@@ -39,3 +39,22 @@ the exact source and both package files.
 Submit shared extension improvements upstream where possible. Remove corresponding
 fork changes once an official release includes them. No upstream acceptance is
 required for local development to continue.
+
+## Provider extension points
+
+An integration may implement `versionControl.resolveRepository` to validate and
+persist the repository selected for a factory, and `workspaceFactory` to construct
+its session workspaces. Factory chooses the workspace adapter from the session's
+stored source-control ownership, checks organization and private-session access,
+and rejects ambiguous ownership. Registration order never chooses a provider.
+GitHub retains the existing workspace path, including stored session settings when
+its credentials are temporarily absent.
+
+The shared source-control registry also routes session observers, run preparation,
+and repository skill authorization. Issue intake remains a separate capability:
+choosing a repository provider does not require choosing the same issue provider.
+
+The custom-board runtime tests mock model HTTP traffic but still require a
+non-secret `OPENAI_API_KEY` placeholder for model construction. They also create
+SDK session locks outside the repository. In CI, use a placeholder only for the
+test step, never for application configuration.
